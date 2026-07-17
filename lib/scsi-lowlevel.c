@@ -1241,9 +1241,7 @@ scsi_report_target_port_groups_unmarshal(struct scsi_task *task)
 			if (rtpg == NULL) {
 				return NULL;
 			}
-			port = (uint16_t *)((uint8_t *)rtpg +
-					sizeof(struct scsi_report_target_port_groups) +
-					sizeof(struct scsi_target_port_group) * group_count);
+			port = (uint16_t *)&rtpg->groups[group_count];
 			rtpg->num_groups = group_count;
 			group_count = 0;
 			port_count = 0;

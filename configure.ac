@@ -247,6 +247,8 @@ AM_CONDITIONAL([HAVE_PTHREAD_SPIN_LOCKS], [test x$ac_cv_lib_pthread_pthread_spin
 # check for pthread_threadid_np
 AC_CHECK_FUNCS(pthread_threadid_np)
 
+AC_CHECK_HEADERS([dispatch/dispatch.h])
+
 AC_CACHE_CHECK([whether libcunit is available],
                [ac_cv_have_cunit],
                [ac_save_CFLAGS="$CFLAGS"
