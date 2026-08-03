@@ -581,6 +581,9 @@ scsi_reportluns_datain_unmarshall(struct scsi_task *task)
                 list_size = task->datain.size;
 
 	num_luns = list_size / 8 - 1;
+	if (num_luns < 0) {
+		return NULL;
+	}
 	list = scsi_malloc(task, offsetof(struct scsi_reportluns_list, luns)
 			   + sizeof(uint16_t) * num_luns);
 	if (list == NULL) {
@@ -1336,8 +1339,9 @@ scsi_maintenancein_datain_unmarshall(struct scsi_task *task)
 				task_get_uint8(task, 1) & 0x07;
 			rsoc_one->cdb_length =
 				task_get_uint16(task, 2);
-			if (rsoc_one->cdb_length <=
-			    sizeof(rsoc_one->cdb_usage_data)) {
+			if (task->datain.size >= 4 &&
+			    rsoc_one->cdb_length <= sizeof(rsoc_one->cdb_usage_data) &&
+			    rsoc_one->cdb_length <= task->datain.size - 4) {
 				memcpy(rsoc_one->cdb_usage_data,
 					&task->datain.data[4],
 					rsoc_one->cdb_length);
@@ -1572,12 +1576,14 @@ scsi_inquiry_unmarshall_standard(struct scsi_task *task)
 	inq->sync                   = !!(task_get_uint8(task, 7) & 0x10);
 	inq->cmdque                 = !!(task_get_uint8(task, 7) & 0x02);
 
-	memcpy(&inq->vendor_identification[0],
-	       &task->datain.data[8], 8);
-	memcpy(&inq->product_identification[0],
-	       &task->datain.data[16], 16);
-	memcpy(&inq->product_revision_level[0],
-	       &task->datain.data[32], 4);
+	if (task->datain.size >= 36) {
+		memcpy(&inq->vendor_identification[0],
+		       &task->datain.data[8], 8);
+		memcpy(&inq->product_identification[0],
+		       &task->datain.data[16], 16);
+		memcpy(&inq->product_revision_level[0],
+		       &task->datain.data[32], 4);
+	}
 
 	inq->clocking               = (task_get_uint8(task, 56) >> 2) & 0x03;
 	inq->qas                    = !!(task_get_uint8(task, 56) & 0x02);
@@ -1603,6 +1609,9 @@ scsi_inquiry_unmarshall_supported_pages(struct scsi_task *task)
 	inq->pagecode = task_get_uint8(task, 1);
 
 	inq->num_pages = task_get_uint8(task, 3);
+	if (task->datain.size < 4 || inq->num_pages > task->datain.size - 4) {
+		return NULL;
+	}
 	inq->pages = scsi_malloc(task, inq->num_pages);
 	if (inq->pages == NULL) {
 		return NULL;
@@ -1623,6 +1632,10 @@ scsi_inquiry_unmarshall_unit_serial_number(struct scsi_task* task)
 	inq->device_type = task_get_uint8(task, 0) & 0x1f;
 	inq->pagecode = task_get_uint8(task, 1);
 
+	if (task->datain.size < 4 ||
+	    task_get_uint8(task, 3) > task->datain.size - 4) {
+		return NULL;
+	}
 	inq->usn = scsi_malloc(task, task_get_uint8(task, 3) + 1);
 	if (inq->usn == NULL) {
 		return NULL;
@@ -1646,10 +1659,17 @@ scsi_inquiry_unmarshall_device_identification(struct scsi_task *task)
 	inq->qualifier             = (task_get_uint8(task, 0) >> 5) & 0x07;
 	inq->device_type           = task_get_uint8(task, 0) & 0x1f;
 	inq->pagecode              = task_get_uint8(task, 1);
+	if (task->datain.size < 4 || remaining > task->datain.size - 4) {
+		return NULL;
+	}
 
 	dptr = &task->datain.data[4];
 	while (remaining > 0) {
-		struct scsi_inquiry_device_designator *dev =
+		struct scsi_inquiry_device_designator *dev;
+		if (remaining < 4 || dptr[3] > remaining - 4) {
+			goto err;
+		}
+		dev =
 			scsi_malloc(task, sizeof(*dev));
 		if (dev == NULL) {
 			goto err;
@@ -1691,7 +1711,7 @@ scsi_inquiry_unmarshall_device_identification(struct scsi_task *task)
 
 static struct third_party_copy_supported_commands *
 third_party_copy_unmarshall_supported_commands(struct scsi_task *task,
-		unsigned char *dptr)
+		unsigned char *dptr, int descriptor_length)
 {
 	struct third_party_copy_supported_commands *supported_commands =
 			scsi_malloc(task, sizeof(*supported_commands));
@@ -1704,10 +1724,17 @@ third_party_copy_unmarshall_supported_commands(struct scsi_task *task,
 
 	supported_commands->descriptor_type = scsi_get_uint16(&dptr[0]);
 
+	if (descriptor_length < 5 || dptr[4] > descriptor_length - 5) {
+		return NULL;
+	}
 	remaining = dptr[4];
 	lptr = &dptr[5];
 	while (remaining > 0) {
-		struct third_party_copy_command_support *command =
+		struct third_party_copy_command_support *command;
+		if (remaining < 2 || lptr[1] > remaining - 2) {
+			goto err;
+		}
+		command =
 			scsi_malloc(task, sizeof(*command));
 		int i;
 
@@ -1756,15 +1783,25 @@ scsi_inquiry_unmarshall_third_party_copy(struct scsi_task *task)
 	inq->pagecode = task_get_uint8(task, 1);
 
 	remaining = task_get_uint16(task, 2);
+	if (task->datain.size < 4 || remaining > task->datain.size - 4) {
+		return NULL;
+	}
 	dptr = &task->datain.data[4];
 	while (remaining > 0) {
+		if (remaining < 4) {
+			goto err;
+		}
 		int copy_desc_type = scsi_get_uint16(&dptr[0]);
 		int copy_desc_len = scsi_get_uint16(&dptr[2]);
+		if (copy_desc_len > remaining - 4) {
+			goto err;
+		}
 
 		switch (copy_desc_type) {
 			case THIRD_PARTY_COPY_TYPE_SUPPORTED_COMMANDS:
 				inq->supported_commands =
-					third_party_copy_unmarshall_supported_commands(task, dptr);
+					third_party_copy_unmarshall_supported_commands(task, dptr,
+						copy_desc_len + 4);
 				if (inq->supported_commands == NULL) {
 					goto err;
 				}
