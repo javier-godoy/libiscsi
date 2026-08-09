@@ -1300,17 +1300,48 @@ iser_post_recvm(struct iser_conn *iser_conn, int count)
  */
 static int
 iser_rcv_completion(struct iser_rx_desc *rx_desc,
-		    struct iser_conn *iser_conn)
+		    struct iser_conn *iser_conn,
+		    uint32_t byte_len)
 {
 	struct iscsi_in_pdu in;
 	int empty, err;
 	struct iscsi_context *iscsi = iser_conn->cma_id->context;
 	struct iscsi_pdu *iscsi_pdu;
 	struct iser_pdu *iser_pdu;
+	size_t max_data;
+
+	memset(&in, 0, sizeof(in));
+	crc32c_init(&in.calculated_data_digest);
 
 	in.hdr = (unsigned char*)rx_desc->iscsi_header;
-	in.data_pos = iscsi_get_pdu_data_size(&in.hdr[0]);
 	in.data = (unsigned char*)rx_desc->data;
+
+	/* The data segment length in the header is under the control of the
+	 * target. Only ever trust it as far as the size of the buffer we
+	 * posted and as far as the number of bytes that were really received.
+	 */
+	if ((unsigned char *)rx_desc == iser_conn->login_resp_buf) {
+		max_data = ISER_RX_LOGIN_SIZE - ISER_HEADERS_LEN;
+	} else {
+		max_data = ISER_RECV_DATA_SEG_LEN;
+	}
+	if (byte_len < ISER_HEADERS_LEN) {
+		iscsi_set_error(iscsi, "Received truncated iSER pdu. Got %u "
+				"bytes but need at least %u",
+				byte_len, (unsigned int)ISER_HEADERS_LEN);
+		return -1;
+	}
+	if (byte_len - ISER_HEADERS_LEN < max_data) {
+		max_data = byte_len - ISER_HEADERS_LEN;
+	}
+
+	in.data_pos = iscsi_get_pdu_data_size(&in.hdr[0]);
+	if (in.data_pos < 0 || (size_t)in.data_pos > max_data) {
+		iscsi_set_error(iscsi, "Invalid datasegmentlen received from "
+				"target (%d). Only %d bytes were received",
+				(int)in.data_pos, (int)max_data);
+		return -1;
+	}
 
 	enum iscsi_opcode opcode = in.hdr[0] & 0x3f;
 	uint32_t itt = scsi_get_uint32(&in.hdr[16]);
@@ -1327,6 +1358,13 @@ iser_rcv_completion(struct iser_rx_desc *rx_desc,
 			break;
 	}
         iscsi_mt_spin_unlock(&iscsi->iscsi_lock);
+
+	/* No pdu is waiting for this itt. Let iscsi_process_pdu() report it
+	 * as an unsolicited response instead of dereferencing NULL here.
+	 */
+	if (iscsi_pdu == NULL) {
+		goto no_waitpdu;
+	}
 
 	iser_pdu = container_of(iscsi_pdu, struct iser_pdu, iscsi_pdu);
 
@@ -1417,7 +1455,8 @@ static int iser_handle_wc(struct ibv_wc *wc,struct iser_conn *iser_conn)
 		if (wc->opcode == IBV_WC_RECV) {
 			rx_desc = (struct iser_rx_desc *)(uintptr_t)wc->wr_id;
 
-			return iser_rcv_completion(rx_desc, iser_conn);
+			return iser_rcv_completion(rx_desc, iser_conn,
+						   wc->byte_len);
 		} else
 		if (wc->opcode == IBV_WC_SEND) {
 			tx_desc = (struct iser_tx_desc *)(uintptr_t)wc->wr_id;

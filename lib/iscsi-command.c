@@ -309,15 +309,23 @@ static void parse_sense_spec(struct scsi_sense *sense, const uint8_t inf[3])
 	sense->field_pointer = scsi_get_uint16(&inf[1]);
 }
 
-/* Parse descriptor format sense data */
+/* Parse descriptor format sense data.
+ * sb_len is the number of bytes that are actually available at sb, so
+ * that a malformed descriptor can not make us read outside the buffer.
+ */
 static void parse_sense_descriptors(struct scsi_sense *sense, const uint8_t *sb,
-				    unsigned sb_len)
+				    size_t sb_len)
 {
-	const unsigned char *p, *const end = sb + sb_len;
+	size_t off;
 
-	for (p = sb; p < end; p += p[1]) {
+	for (off = 0; off + 2 <= sb_len; off += (size_t)sb[off + 1] + 2) {
+		const unsigned char *p = &sb[off];
 		uint8_t addl_len = p[1];
+
 		if (addl_len < 4)
+			break;
+		/* the descriptor must fit in the data we received */
+		if ((size_t)addl_len + 2 > sb_len - off)
 			break;
 		switch (p[0]) {
 		case 0:
@@ -336,29 +344,75 @@ static void parse_sense_descriptors(struct scsi_sense *sense, const uint8_t *sb,
 	}
 }
 
-void scsi_parse_sense_data(struct scsi_sense *sense, const uint8_t *sb)
+/* Parse sense data, never reading more than sb_len bytes from sb. */
+static void scsi_parse_sense_data_size(struct scsi_sense *sense,
+				       const uint8_t *sb, size_t sb_len)
 {
+	if (sb_len < 1) {
+		return;
+	}
+
 	sense->error_type = sb[0] & 0x7f;
 	switch (sense->error_type) {
 	case 0x70:
 	case 0x71:
 		/* Fixed format */
+		if (sb_len < 3) {
+			break;
+		}
 		sense->key  = sb[2] & 0x0f;
-		if (sb[0] & 0x80) {	/* VALID */
+		if ((sb[0] & 0x80) && sb_len >= 7) {	/* VALID */
 			sense->info_valid = 1;
 			sense->information = scsi_get_uint32(sb + 3);
 		}
-		sense->ascq = scsi_get_uint16(&sb[12]);
-		parse_sense_spec(sense, sb + 15);
+		if (sb_len >= 14) {
+			sense->ascq = scsi_get_uint16(&sb[12]);
+		}
+		if (sb_len >= 18) {
+			parse_sense_spec(sense, sb + 15);
+		}
 		break;
 	case 0x72:
 	case 0x73:
 		/* Descriptor format */
+		if (sb_len < 2) {
+			break;
+		}
 		sense->key  = sb[1] & 0x0f;
+		if (sb_len < 4) {
+			break;
+		}
 		sense->ascq = scsi_get_uint16(&sb[2]);
-		parse_sense_descriptors(sense, sb + 8, sb[7]);
+		if (sb_len < 8) {
+			break;
+		}
+		parse_sense_descriptors(sense, sb + 8, MIN(sb[7], sb_len - 8));
 		break;
 	}
+}
+
+void scsi_parse_sense_data(struct scsi_sense *sense, const uint8_t *sb)
+{
+	size_t sb_len;
+
+	/* This entry point is not told how much data the caller has, so the
+	 * best we can do is to trust the length that the sense data itself
+	 * declares. Callers that know the real size should use
+	 * scsi_parse_sense_data_size() instead.
+	 */
+	switch (sb[0] & 0x7f) {
+	case 0x70:
+	case 0x71:
+	case 0x72:
+	case 0x73:
+		sb_len = (size_t)sb[7] + 8;
+		break;
+	default:
+		sb_len = 1;
+		break;
+	}
+
+	scsi_parse_sense_data_size(sense, sb, sb_len);
 }
 
 int
@@ -437,15 +491,32 @@ iscsi_process_scsi_reply(struct iscsi_context *iscsi, struct iscsi_pdu *pdu,
 		break;
 	case SCSI_STATUS_CHECK_CONDITION:
 		task->datain.size = in->data_pos;
-		task->datain.data = malloc(task->datain.size);
-		if (task->datain.data == NULL) {
-			iscsi_set_error(iscsi, "failed to allocate blob for "
-					"sense data");
-			break;
+		if (task->datain.size > 0) {
+			task->datain.data = malloc(task->datain.size);
+			if (task->datain.data == NULL) {
+				task->datain.size = 0;
+				iscsi_set_error(iscsi, "failed to allocate "
+						"blob for sense data");
+				break;
+			}
+			memcpy(task->datain.data, in->data, task->datain.size);
 		}
-		memcpy(task->datain.data, in->data, task->datain.size);
 
-		scsi_parse_sense_data(&task->sense, &task->datain.data[2]);
+		/* The data segment holds a two byte sense length followed by
+		 * the sense data itself. A malicious or broken target can
+		 * send a truncated or empty segment, so only parse what we
+		 * actually received.
+		 */
+		if (task->datain.size > 2) {
+			size_t sense_len = task->datain.size - 2;
+
+			if (scsi_get_uint16(task->datain.data) < sense_len) {
+				sense_len = scsi_get_uint16(task->datain.data);
+			}
+			scsi_parse_sense_data_size(&task->sense,
+						   &task->datain.data[2],
+						   sense_len);
+		}
 		iscsi_set_error(iscsi, "SENSE KEY:%s(%d) ASCQ:%s(0x%04x)",
 				scsi_sense_key_str(task->sense.key),
 				task->sense.key,
@@ -527,8 +598,11 @@ iscsi_process_scsi_data_in(struct iscsi_context *iscsi, struct iscsi_pdu *pdu,
 	}
 	dsl = scsi_get_uint32(&in->hdr[4]) & 0x00ffffff;
 
-	/* Don't add to reassembly buffer if we already have a user buffer */
-	if (task->iovector_in.iov == NULL) {
+	/* Don't add to reassembly buffer if we already have a user buffer.
+	 * A data-in with an empty data segment is legal, and there is
+	 * nothing to reassemble for it.
+	 */
+	if (task->iovector_in.iov == NULL && dsl > 0) {
 		if (iscsi_add_data(iscsi, &pdu->indata, in->data, dsl, 0) != 0) {
 		    iscsi_set_error(iscsi, "Out-of-memory: failed to add data "
 				"to pdu in buffer.");
@@ -591,10 +665,24 @@ iscsi_process_r2t(struct iscsi_context *iscsi, struct iscsi_pdu *pdu,
 			 struct iscsi_in_pdu *in)
 {
 	uint32_t ttt, offset, len;
+	struct scsi_task *task = pdu->scsi_cbdata.task;
 
 	ttt    = scsi_get_uint32(&in->hdr[20]);
 	offset = scsi_get_uint32(&in->hdr[40]);
 	len    = scsi_get_uint32(&in->hdr[44]);
+
+	/* Never let the target make us send more data than the command
+	 * carries, or from beyond the end of the buffer. Without this a
+	 * target can make us queue an unbounded number of data-out pdus.
+	 */
+	if (task == NULL || task->expxferlen < 0
+	    || offset > (uint32_t)task->expxferlen
+	    || len > (uint32_t)task->expxferlen - offset) {
+		iscsi_set_error(iscsi, "Invalid R2T. offset:%u len:%u is "
+				"outside the %d bytes of this command",
+				offset, len, task ? task->expxferlen : 0);
+		return -1;
+	}
 
 	pdu->datasn = 0;
 	iscsi_send_data_out(iscsi, pdu, ttt, offset, len);
@@ -2417,6 +2505,14 @@ iscsi_get_scsi_task_iovector_in(struct iscsi_context *iscsi, struct iscsi_in_pdu
 		return NULL;
 	}
 
+	/* The itt may well belong to a pdu that has no scsi task attached,
+	 * for example a login, text or nop-out pdu. A target that sends us
+	 * a data-in for such an itt must not crash us.
+	 */
+	if (pdu->scsi_cbdata.task == NULL) {
+		return NULL;
+	}
+
 	if (pdu->scsi_cbdata.task->iovector_in.iov == NULL) {
 		return NULL;
 	}
@@ -2427,6 +2523,10 @@ iscsi_get_scsi_task_iovector_in(struct iscsi_context *iscsi, struct iscsi_in_pdu
 struct scsi_iovector *
 iscsi_get_scsi_task_iovector_out(struct iscsi_context *iscsi, struct iscsi_pdu *pdu)
 {
+	if (pdu->scsi_cbdata.task == NULL) {
+		return NULL;
+	}
+
 	if (pdu->scsi_cbdata.task->iovector_out.iov == NULL) {
 		return NULL;
 	}

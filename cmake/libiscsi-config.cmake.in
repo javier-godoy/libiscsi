@@ -1,0 +1,15 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+if(NOT @BUILD_SHARED_LIBS@)
+    # A static libiscsi needs its own dependencies on the link line.
+    if(@HAVE_LIBPTHREAD@)
+        set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+        find_dependency(Threads)
+    endif()
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/libiscsi-targets.cmake")
+
+check_required_components(libiscsi)

@@ -21,7 +21,10 @@ EXTRA_DIST = autogen.sh COPYING LICENCE-GPL-2.txt LICENCE-LGPL-2.1.txt README.md
 	     aros/Makefile.AROS test-tool/iscsi-multipath.h \
 	     win32/win32_compat.c win32/win32_compat.h \
 	     patches/mtx-iscsi.diff patches/README patches/sg3_utils-1.32.patch \
-	     lib/libiscsi.syms.in
+	     lib/libiscsi.syms.in \
+	     CMakeLists.txt cmake/config.h.cmake cmake/libiscsi-config.cmake.in \
+	     lib/CMakeLists.txt doc/CMakeLists.txt utils/CMakeLists.txt \
+	     test-tool/CMakeLists.txt tests/CMakeLists.txt examples/CMakeLists.txt
 
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libiscsi.pc

@@ -705,6 +705,28 @@ h2i(int h)
 	return h - '0';
 }
 
+/* A CHAP challenge is a hex string that we decode two digits at a time.
+ * Verify that it really is one before we store it.
+ */
+static int
+chap_c_is_valid(const char *chap_c, int len)
+{
+	int i;
+
+	if (len < 2 || (len & 0x01)) {
+		return 0;
+	}
+	for (i = 0; i < len; i++) {
+		if (!((chap_c[i] >= '0' && chap_c[i] <= '9')
+		      || (chap_c[i] >= 'a' && chap_c[i] <= 'f')
+		      || (chap_c[i] >= 'A' && chap_c[i] <= 'F'))) {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
 static int
 i2h(int i)
 {
@@ -785,7 +807,7 @@ static void compute_chap_r_md5(struct iscsi_context *iscsi, int chap_i,
 	md5_write(ctx, passwd, strlen((char *)passwd));
 
 	strp = chap_c;
-	while (*strp != 0) {
+	while (strp[0] != 0 && strp[1] != 0) {
 		c = (h2i(strp[0]) << 4) | h2i(strp[1]);
 		strp += 2;
 		md5_putc(ctx, c);
@@ -809,7 +831,7 @@ static void compute_chap_r_sha1(struct iscsi_context *iscsi, int chap_i,
         SHA1Input(&ctx, passwd, strlen((char *)passwd));
 
 	strp = chap_c;
-	while (*strp != 0) {
+	while (strp[0] != 0 && strp[1] != 0) {
 		c = (h2i(strp[0]) << 4) | h2i(strp[1]);
 		strp += 2;
                 SHA1Input(&ctx, &c, 1);
@@ -832,7 +854,7 @@ static void compute_chap_r_sha3_256(struct iscsi_context *iscsi, int chap_i,
         sha3_update(&ctx, passwd, strlen((char *)passwd));
 
 	strp = chap_c;
-	while (*strp != 0) {
+	while (strp[0] != 0 && strp[1] != 0) {
 		c = (h2i(strp[0]) << 4) | h2i(strp[1]);
 		strp += 2;
                 sha3_update(&ctx, &c, 1);
@@ -855,7 +877,7 @@ static void compute_chap_r_sha256(struct iscsi_context *iscsi, int chap_i,
         SHA256Input(&ctx, passwd, strlen((char *)passwd));
 
 	strp = chap_c;
-	while (*strp != 0) {
+	while (strp[0] != 0 && strp[1] != 0) {
 		c = (h2i(strp[0]) << 4) | h2i(strp[1]);
 		strp += 2;
                 SHA256Input(&ctx, &c, 1);
@@ -1424,6 +1446,20 @@ iscsi_process_login_reply(struct iscsi_context *iscsi, struct iscsi_pdu *pdu,
 			if (len-9 > MAX_CHAP_C_LENGTH) {
 				iscsi_set_error(iscsi, "Wrong length of CHAP_C received from"
 						" target (%d, max: %d)", len-9, MAX_CHAP_C_LENGTH);
+				if (pdu->callback) {
+					pdu->callback(iscsi, SCSI_STATUS_ERROR, NULL,
+					              pdu->private_data);
+				}
+				return 0;
+			}
+			/* The challenge is decoded two hex digits at a time, so
+			 * anything that is not an even number of hex digits
+			 * would make us read past the end of the buffer.
+			 */
+			if (!chap_c_is_valid(ptr + 9, len - 9)) {
+				iscsi_set_error(iscsi, "Invalid CHAP_C received "
+						"from target. Must be an even "
+						"number of hex digits.");
 				if (pdu->callback) {
 					pdu->callback(iscsi, SCSI_STATUS_ERROR, NULL,
 					              pdu->private_data);

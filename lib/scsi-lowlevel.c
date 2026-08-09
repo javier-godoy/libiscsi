@@ -941,8 +941,16 @@ scsi_serviceactionin_datain_unmarshall(struct scsi_task *task)
 			return NULL;
 		}
 
-		if (len > task->datain.size - 4) {
-			len = task->datain.size - 4;
+		/* The descriptors start at offset 8. Clamp the length the
+		 * target reported to the data we actually received so that
+		 * we neither overflow the allocation size nor report
+		 * descriptors that are not there.
+		 */
+		if (task->datain.size < 8) {
+			return NULL;
+		}
+		if (len < 0 || len > task->datain.size - 8) {
+			len = task->datain.size - 8;
 		}
 		len = len / 16;
 
@@ -1273,6 +1281,13 @@ scsi_maintenancein_datain_unmarshall(struct scsi_task *task)
 			}
 
 			len = task_get_uint32(task, 0);
+			/* Never trust the length the target reports. If it is
+			 * bigger than the data we received we would compute a
+			 * bogus, possibly overflowing, allocation size.
+			 */
+			if (len < 0 || len > task->datain.size - 4) {
+				len = task->datain.size - 4;
+			}
 			/* len / 8 is not always correct since if CTDP==1 then
 			 * the descriptor is 20 bytes in size intead of 8.
 			 * It doesnt matter here though since it just means
@@ -3870,7 +3885,7 @@ scsi_datain_getfullsize(struct scsi_task *task)
 void *
 scsi_datain_unmarshall(struct scsi_task *task)
 {
-	if (!task || !task->datain.size)
+	if (!task || !task->datain.data || !task->datain.size)
 		return NULL;
 
 	switch (task->cdb[0]) {

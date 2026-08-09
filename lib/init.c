@@ -131,6 +131,7 @@ iscsi_srand_init(struct iscsi_context *iscsi) {
 
 	err = pthread_mutex_lock(&rd_mutex);
 	assert(err == 0);
+	(void)err;	/* assert() compiles away when NDEBUG is defined */
 
 	if (rd_set) {
 		/* another thread initialized it in the meantime */
@@ -159,6 +160,7 @@ out:
 	rd_set = true;
 	err = pthread_mutex_unlock(&rd_mutex);
 	assert(err == 0);
+	(void)err;	/* assert() compiles away when NDEBUG is defined */
 }
 
 struct iscsi_context *
@@ -528,6 +530,10 @@ iscsi_decode_url_string(char *str)
 		*tmp++ = c;
 		memmove(tmp, str, strlen(str));
 		tmp[strlen(str)] = 0;
+		/* The remainder of the string just moved back to tmp, so
+		 * continue scanning from there and not from the old position.
+		 */
+		str = tmp;
 	}
 }
 
@@ -536,6 +542,10 @@ iscsi_parse_url(struct iscsi_context *iscsi, const char *url, int full)
 {
 	struct iscsi_url *iscsi_url;
 	char str[MAX_STRING_SIZE+1];
+	/* Used for url arguments that are given without a value. It must
+	 * live as long as the values we parse out of the url.
+	 */
+	char no_value[] = "";
 	char *portal;
 	char *user = NULL;
 	char *passwd = NULL;
@@ -576,6 +586,10 @@ iscsi_parse_url(struct iscsi_context *iscsi, const char *url, int full)
         if (!strncmp(url, "iscsi://", 8)) {
                 strncpy(str, url + 8, MAX_STRING_SIZE);
         }
+	/* strncpy() does not terminate the destination if the source was
+	 * too long, so make sure that it always is terminated.
+	 */
+	str[MAX_STRING_SIZE] = '\0';
 	portal = str;
 
 	user          = getenv("LIBISCSI_CHAP_USERNAME");
@@ -596,6 +610,11 @@ iscsi_parse_url(struct iscsi_context *iscsi, const char *url, int full)
 			value = strchr(key, '=');
 			if (value != NULL) {
 				*value++ = 0;
+			} else {
+				/* A key without a value. Use an empty string
+				 * so that we do not dereference NULL below.
+				 */
+				value = no_value;
 			}
 			if (!strcmp(key, "auth")) {
 				if (!strcmp(value, "md5")) {

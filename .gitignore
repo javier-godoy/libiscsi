@@ -56,3 +56,10 @@ TAGS
 /libiscsi.pc
 /.cproject
 /.project
+
+# CMake build directories
+/build/
+/build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake

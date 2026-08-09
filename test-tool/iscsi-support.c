@@ -3172,5 +3172,6 @@ test_get_clock_sec(void)
 	secs = tv.tv_sec;
 #endif
 	assert(res == 0);
+	(void)res;	/* assert() compiles away when NDEBUG is defined */
 	return secs;
 }

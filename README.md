@@ -29,6 +29,47 @@ make
 sudo make install
 
 
+Building with CMake
+===================
+CMake can be used instead of autotools. It performs the same feature tests,
+uses the same compiler warnings and produces a library with the same soname
+and the same set of exported symbols.
+
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build
+sudo cmake --install build
+
+In-source builds are refused, because they would overwrite the config.h and
+Makefile of the autotools build. Use a separate build directory as above.
+
+The options below mirror the ./configure switches. Pass them to the first
+cmake invocation, for example -DENABLE_WERROR=OFF.
+
+    BUILD_SHARED_LIBS   ON     build a shared instead of a static library
+    ENABLE_WERROR       ON     build with -Werror
+    ENABLE_MANPAGES     OFF    regenerate the manpages with xsltproc
+    ENABLE_TEST_TOOL    ON     build test-tool (needs libcunit)
+    ENABLE_TESTS        ON     build the programs used by the test suite
+    ENABLE_EXAMPLES     ON     build the examples
+    ENABLE_ISER         ON     use iSER (RDMA) when the headers are present
+    WITH_GNUTLS         auto   use gnutls to compute MD5 (auto/yes/no)
+    WITH_LIBGCRYPT      auto   use libgcrypt to compute MD5 (auto/yes/no)
+
+Unlike libtool, CMake builds either a shared or a static library, not both.
+Use -DBUILD_SHARED_LIBS=OFF for a static libiscsi.
+
+"cmake --build build --target check" is the equivalent of "make test" in the
+tests directory and needs tgtd and tgtadm on the PATH.
+
+The install includes a pkg-config file and CMake package files, so dependent
+projects can use either of:
+
+    pkg_check_modules(ISCSI REQUIRED libiscsi)
+
+    find_package(libiscsi REQUIRED)
+    target_link_libraries(myapp PRIVATE libiscsi::iscsi)
+
+
 Build RPM
 =========
 To build RPMs run the following script from the libiscsi root directory

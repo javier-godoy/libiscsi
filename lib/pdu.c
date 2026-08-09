@@ -940,7 +940,7 @@ iscsi_timeout_scan(struct iscsi_context *iscsi)
 		ISCSI_LIST_ADD_END(&tmp, pdu);
         }
         iscsi_mt_spin_unlock(&iscsi->iscsi_lock);
-	for (pdu = tmp; pdu; pdu = next_pdu) {
+	while ((pdu = tmp) != NULL) {
 		ISCSI_LIST_REMOVE(&tmp, pdu);
 		iscsi_set_error(iscsi, "command timed out from outqueue");
 		iscsi_dump_pdu_header(iscsi, pdu->outdata.data);
@@ -971,7 +971,7 @@ iscsi_timeout_scan(struct iscsi_context *iscsi)
 		ISCSI_LIST_ADD_END(&tmp, pdu);
         }
         iscsi_mt_spin_unlock(&iscsi->iscsi_lock);
-	for (pdu = tmp; pdu; pdu = next_pdu) {
+	while ((pdu = tmp) != NULL) {
 		ISCSI_LIST_REMOVE(&tmp, pdu);
 		iscsi_set_error(iscsi, "command timed out from waitqueue");
 		iscsi_dump_pdu_header(iscsi, pdu->outdata.data);
