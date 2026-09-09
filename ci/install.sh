@@ -12,6 +12,10 @@ case "$(uname)" in
 	    libtool
 	    xsltproc
 	)
+	# The runner image ships a stale package index; without an update
+	# apt can try to fetch package versions that have already been
+	# superseded and removed from the mirrors (404 on the .deb).
+	apt-get update
 	apt-get install -y "${packages[@]}"
 	;;
     Darwin)
